@@ -1,0 +1,29 @@
+# Build output
+/build/
+build*/
+*.user
+.vs/
+*.vcxproj.user
+
+# Generated / transient state
+*.cf
+*.log
+coord*.txt
+cfcli_state.cf
+cuda_out.txt
+cuda_err.txt
+_install/
+consumer-build/
+build-debug/
+build-asan/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Sanitizer / tool debris
+*.pdb
+*.ilk
