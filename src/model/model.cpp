@@ -24,6 +24,12 @@ CapacityModel::CapacityModel() {
 bool CapacityModel::registerWorker(WorkerId w, WorkerBootId b) {
     std::scoped_lock lk(mutex_);
     if (!w.valid() || !b.valid()) return false;
+    auto it = sources_.find(w);
+    // A live source incarnation cannot be replaced by a different (stale/older)
+    // boot identity; that would let a dead incarnation replay its authority.
+    if (it != sources_.end() && it->second.alive && it->second.bootId != b) {
+        return false;
+    }
     sources_[w] = SourceState{b, true};
     return true;
 }

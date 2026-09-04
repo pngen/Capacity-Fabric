@@ -262,6 +262,22 @@ static void testResourceGenerationAdvance() {
     CHECK(model.publishResource(r2));
 }
 
+static void testStaleBootRejected() {
+    CapacityModel model;
+    const WorkerId w(1);
+    CHECK(model.registerWorker(w, WorkerBootId(100)));
+    // A different boot id while the incarnation is alive is a stale replay: reject.
+    CHECK(!model.registerWorker(w, WorkerBootId(200)));
+    // The same boot id (reconnect / refresh) is accepted.
+    CHECK(model.registerWorker(w, WorkerBootId(100)));
+    // After death, a fresh boot id is accepted (recovery).
+    model.markWorkerDead(w);
+    CHECK(model.registerWorker(w, WorkerBootId(300)));
+    // Re-playing the old, now-dead boot id while the fresh incarnation is alive is
+    // rejected.
+    CHECK(!model.registerWorker(w, WorkerBootId(100)));
+}
+
 int main() {
     testUnits();
     testFragmentation();
@@ -272,6 +288,7 @@ int main() {
     testPersistenceRoundTrip();
     testStaleAuthority();
     testResourceGenerationAdvance();
+    testStaleBootRejected();
     CF_TEST_SUMMARY();
     return CF_TEST_RETURN();
 }

@@ -78,7 +78,7 @@ cfcli inspects resources, generations, nominal/usable/committed capacity, headro
 
 ## CUDA hardware proof
 
-When a CUDA-capable NVIDIA device is present, the cf_cuda_proof executable discovers the GPU, publishes real device/capacity evidence, measures cudaMemGetInfo, runs real kernels with CPU-reference verification, and demonstrates current-capacity gating (fit, no-fit, fragmentation, live allocation changes, worker death, and coordinator restart). It distinguishes physical device capacity, measured free memory, and the governed test pool, and labels evidence REAL, DERIVED, SYNTHETIC, or UNSUPPORTED as appropriate.
+When a CUDA-capable NVIDIA device is present, the cf_cuda_proof executable discovers the GPU, publishes real device/capacity evidence, measures cudaMemGetInfo, runs real kernels with CPU-reference verification, and demonstrates current-capacity gating (fit, no-fit, fragmentation, live allocation changes, and coordinator restart). It also runs a real worker-death / revalidation scenario: a CUDA-backed worker OS process publishes real RTX 5090 evidence, is killed as a real OS process, its authority is fenced (the query becomes REVALIDATION_REQUIRED), a stale boot replay is rejected, and a fresh incarnation republishes and restores FIT_NOW. It distinguishes physical device capacity, measured free memory, and the governed test pool, and labels evidence REAL, DERIVED, SYNTHETIC, or UNSUPPORTED as appropriate.
 
 ## License
 

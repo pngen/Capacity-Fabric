@@ -1,7 +1,7 @@
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <string>
-#include <thread>
 
 #include "capacity_fabric/adapters/reference.hpp"
 #include "capacity_fabric/protocol/payload.hpp"
@@ -9,8 +9,9 @@
 
 // Reference worker executable. Usage:
 //   cfworker <host> <port> <workerId> <bootId> <resourceId> <deviceId> <vramTotalMB> <vramFreeMB>
-// Connects, registers with its boot identity, publishes one resource, then stays
-// connected until it is killed or the connection closes (coordinator restart).
+// It registers with its boot identity, publishes one resource (request/response),
+// prints READY after the coordinator acknowledges publication, then holds the
+// connection until it is killed or the coordinator shuts down.
 int main(int argc, char** argv) {
     if (argc < 9) { std::cerr << "cfworker: too few args" << std::endl; return 2; }
     const std::string host = argv[1];
@@ -27,25 +28,33 @@ int main(int argc, char** argv) {
     if (!conn.connect(host, port, err)) { std::cerr << "cfworker: connect failed: " << err << std::endl; return 1; }
     conn.setNoDelay(true);
 
-    // HELLO
-    {
+    const auto sendRecv = [&](capacity_fabric::MessageType type, const std::vector<uint8_t>& payload,
+                              std::string& e) -> capacity_fabric::FramedMessage {
         capacity_fabric::FramedMessage m;
-        m.type = capacity_fabric::MessageType::Hello;
-        std::string e2;
-        if (!conn.sendFrame(m, e2)) { std::cerr << "cfworker: hello failed" << std::endl; return 1; }
+        m.type = type;
+        m.payload = payload;
+        if (!conn.sendFrame(m, e)) return {};
+        capacity_fabric::FramedMessage r;
+        bool closed = false;
+        if (!conn.recvFrame(r, e, closed)) return {};
+        return r;
+    };
+
+    // HELLO -> coordinator epoch.
+    if (sendRecv(capacity_fabric::MessageType::Hello, {}, err).type != capacity_fabric::MessageType::Hello) {
+        std::cerr << "cfworker: HELLO failed: " << err << std::endl; return 1;
     }
-    // REGISTER
+    // REGISTER -> ACK.
     {
         capacity_fabric::BinaryWriter w;
         w.writeU64(workerId.value());
         w.writeU64(bootId.value());
-        capacity_fabric::FramedMessage m;
-        m.type = capacity_fabric::MessageType::Register;
-        m.payload = w.take();
-        std::string e2;
-        if (!conn.sendFrame(m, e2)) { std::cerr << "cfworker: register failed" << std::endl; return 1; }
+        auto ack = sendRecv(capacity_fabric::MessageType::Register, w.take(), err);
+        if (ack.type != capacity_fabric::MessageType::Register || ack.payload.empty() || ack.payload[0] != 1) {
+            std::cerr << "cfworker: REGISTER rejected" << std::endl; return 1;
+        }
     }
-    // PUBLISH_RESOURCE
+    // PUBLISH_RESOURCE -> ACK.
     {
         const capacity_fabric::DeviceCapability cap{"sm_120", "blackwell", "fp8", {"fp8", "tensor_core"}};
         auto res = capacity_fabric::reference::makeResource(
@@ -55,21 +64,21 @@ int main(int argc, char** argv) {
             {capacity_fabric::ByteCount(freeMB << 20)});
         capacity_fabric::BinaryWriter w;
         capacity_fabric::protocol::payload::writeResource(w, res);
-        capacity_fabric::FramedMessage m;
-        m.type = capacity_fabric::MessageType::PublishResource;
-        m.payload = w.take();
-        std::string e2;
-        if (!conn.sendFrame(m, e2)) { std::cerr << "cfworker: publish failed" << std::endl; return 1; }
+        auto ack = sendRecv(capacity_fabric::MessageType::PublishResource, w.take(), err);
+        if (ack.type != capacity_fabric::MessageType::PublishResource || ack.payload.empty() || ack.payload[0] != 1) {
+            std::cerr << "cfworker: PUBLISH_REJECTED" << std::endl; return 1;
+        }
     }
+    // Signal readiness to the driver (the coordinator has acknowledged publication).
+    std::printf("READY\n");
+    std::fflush(stdout);
 
     // Hold the connection open until the peer closes (worker kill or shutdown).
     for (;;) {
         capacity_fabric::FramedMessage m;
         std::string e2;
         bool peerClosed = false;
-        if (!conn.recvFrame(m, e2, peerClosed)) {
-            return 0;  // coordinator closed or restart
-        }
+        if (!conn.recvFrame(m, e2, peerClosed)) return 0;
         if (m.type == capacity_fabric::MessageType::Shutdown) return 0;
     }
 }

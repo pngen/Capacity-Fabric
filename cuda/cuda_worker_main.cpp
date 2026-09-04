@@ -6,9 +6,10 @@
 #include "capacity_fabric/protocol/payload.hpp"
 #include "capacity_fabric/protocol/tcp.hpp"
 
-// Reference CUDA worker: publishes REAL device free/total memory as capacity
-// evidence to a coordinator, then holds the connection. Usage:
-//   cf_cuda_worker <host> <port> <workerId> <bootId> <resourceId>
+// Reference CUDA worker: performs REAL CUDA device discovery and publishes the
+// real device free/total memory as capacity evidence to a coordinator, then holds
+// the connection. It signals READY once the coordinator acknowledges publication.
+// Usage: cf_cuda_worker <host> <port> <workerId> <bootId> <resourceId>
 int main(int argc, char** argv) {
     (void)argc;
     const std::string host = argv[1];
@@ -31,20 +32,33 @@ int main(int argc, char** argv) {
     }
     conn.setNoDelay(true);
 
-    capacity_fabric::FramedMessage hello;
-    hello.type = capacity_fabric::MessageType::Hello;
-    std::string e2;
-    conn.sendFrame(hello, e2);
+    const auto sendRecv = [&](capacity_fabric::MessageType type, const std::vector<uint8_t>& payload,
+                              std::string& e) -> capacity_fabric::FramedMessage {
+        capacity_fabric::FramedMessage m;
+        m.type = type;
+        m.payload = payload;
+        if (!conn.sendFrame(m, e)) return {};
+        capacity_fabric::FramedMessage r;
+        bool closed = false;
+        if (!conn.recvFrame(r, e, closed)) return {};
+        return r;
+    };
 
-    capacity_fabric::BinaryWriter rg;
-    rg.writeU64(workerId.value());
-    rg.writeU64(bootId.value());
-    capacity_fabric::FramedMessage reg;
-    reg.type = capacity_fabric::MessageType::Register;
-    reg.payload = rg.take();
-    conn.sendFrame(reg, e2);
+    if (sendRecv(capacity_fabric::MessageType::Hello, {}, err).type != capacity_fabric::MessageType::Hello) {
+        std::fprintf(stderr, "cf_cuda_worker: HELLO failed: %s\n", err.c_str());
+        return 1;
+    }
+    {
+        capacity_fabric::BinaryWriter w;
+        w.writeU64(workerId.value());
+        w.writeU64(bootId.value());
+        auto ack = sendRecv(capacity_fabric::MessageType::Register, w.take(), err);
+        if (ack.type != capacity_fabric::MessageType::Register || ack.payload.empty() || ack.payload[0] != 1) {
+            std::fprintf(stderr, "cf_cuda_worker: REGISTER rejected\n");
+            return 1;
+        }
+    }
 
-    // Real device free memory (measured).
     std::size_t freeBytes = 0;
     capacity_fabric::cuda::currentFreeBytes(freeBytes, err);
     const capacity_fabric::DeviceCapability cap{dev.name, "cuda",
@@ -67,18 +81,23 @@ int main(int argc, char** argv) {
     res.provenance = capacity_fabric::Provenance::Measured;
     res.freeBlocks = {capacity_fabric::ByteCount(freeBytes)};
 
-    capacity_fabric::BinaryWriter pw;
-    capacity_fabric::protocol::payload::writeResource(pw, res);
-    capacity_fabric::FramedMessage pub;
-    pub.type = capacity_fabric::MessageType::PublishResource;
-    pub.payload = pw.take();
-    conn.sendFrame(pub, e2);
+    {
+        capacity_fabric::BinaryWriter w;
+        capacity_fabric::protocol::payload::writeResource(w, res);
+        auto ack = sendRecv(capacity_fabric::MessageType::PublishResource, w.take(), err);
+        if (ack.type != capacity_fabric::MessageType::PublishResource || ack.payload.empty() || ack.payload[0] != 1) {
+            std::fprintf(stderr, "cf_cuda_worker: PUBLISH_REJECTED\n");
+            return 1;
+        }
+    }
+    std::printf("READY\n");
+    std::fflush(stdout);
 
     for (;;) {
         capacity_fabric::FramedMessage m;
-        std::string e3;
+        std::string e2;
         bool closed = false;
-        if (!conn.recvFrame(m, e3, closed)) return 0;
+        if (!conn.recvFrame(m, e2, closed)) return 0;
         if (m.type == capacity_fabric::MessageType::Shutdown) return 0;
     }
 }
